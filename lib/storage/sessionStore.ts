@@ -1,17 +1,25 @@
 
 import { createStore, del, get, keys, set } from "idb-keyval";
 
-export type X3DHSession = {
+export type SymmetricRatchetSession = {
   peerUserId: string;
   rootKey: string;
 
   myIdentityDhPublicKey: string;
   peerIdentityDhPublicKey: string;
 
+  sendingChainKey: string;
+  receivingChainKey: string;
+
+  sendMessageNumber: number;
+  receiveMessageNumber: number;
+
   role: "sender" | "receiver";
 
   createdAt: string;
 };
+
+export type X3DHSession = SymmetricRatchetSession;
 
 const sessionStore = createStore("secure-chat-sessions", "sessions");
 
@@ -26,7 +34,7 @@ export async function saveX3DHSession({
 }: {
   userId: string;
   peerUserId: string;
-  session: X3DHSession;
+  session: SymmetricRatchetSession;
 }) {
   await set(sessionKeyName(userId, peerUserId), session, sessionStore);
 }
@@ -38,7 +46,7 @@ export async function getX3DHSession({
   userId: string;
   peerUserId: string;
 }) {
-  return await get<X3DHSession>(
+  return await get<SymmetricRatchetSession>(
     sessionKeyName(userId, peerUserId),
     sessionStore
   );

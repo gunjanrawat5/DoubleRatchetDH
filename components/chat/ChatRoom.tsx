@@ -3,8 +3,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import ChatWindow from "@/components/chat/ChatWindow";
 import type { ActiveChat, ChatMessage, DbMessage } from "@/components/chat/types";
+import {
+  decryptConversationMessages,
+  decryptIncomingMessage,
+  encryptMessageForPeer,
+} from "@/lib/chat/messages";
 import { ensureCryptoSetupForCurrentUser } from "@/lib/crypto/setup";
-import { decryptX3DHMessage, encryptX3DHMessage } from "@/lib/crypto/x3dh";
 import { createClient } from "@/lib/supabase/client";
 
 type ChatRoomProps = {
@@ -17,36 +21,12 @@ async function messageFromRecord(
   record: DbMessage,
   currentUserId: string,
   activeChat?: ActiveChat,
+  text?: string,
 ): Promise<ChatMessage> {
-  let text = `Encrypted ${record.message_type} payload`;
-
-  if (record.message_type === "x3dh_initial" || record.message_type === "x3dh_message") {
-    try {
-      text = await decryptX3DHMessage({
-        currentUserId,
-        message: record,
-      });
-    } catch (error) {
-      console.error("[x3dh] decrypt failed", {
-        messageId: record.id,
-        messageType: record.message_type,
-        senderId: record.sender_id,
-        receiverId: record.receiver_id,
-        header: record.header,
-        error,
-      });
-      text = "[Unable to decrypt message]";
-    }
-  } else if (record.message_type === "dev_encrypted") {
-    text = "[Legacy dev-encrypted message]";
-  } else if (record.message_type === "text") {
-    text = record.ciphertext;
-  }
-
   return {
     id: record.id,
     sender: record.sender_id === currentUserId ? "You" : activeChat?.name ?? "Contact",
-    text,
+    text: text ?? "[Unable to decrypt message]",
     own: record.sender_id === currentUserId,
     timestamp: record.created_at,
   };
@@ -101,8 +81,16 @@ export default function ChatRoom({
     let isCancelled = false;
 
     async function loadInitialMessages() {
+      const plaintexts = await decryptConversationMessages({
+        currentUserId,
+        peerUserId: activeChat?.id ?? "",
+        messages: initialMessages,
+      });
+
       const decryptedMessages = await Promise.all(
-        initialMessages.map((message) => messageFromRecord(message, currentUserId, activeChat)),
+        initialMessages.map((message, index) =>
+          messageFromRecord(message, currentUserId, activeChat, plaintexts[index]),
+        ),
       );
 
       if (!isCancelled) {
@@ -149,7 +137,36 @@ export default function ChatRoom({
           });
 
           seenMessageIdsRef.current.add(message.id);
-          const decryptedMessage = await messageFromRecord(message, currentUserId, activeChat);
+          let text = "[Unable to decrypt message]";
+
+          if (message.message_type === "text") {
+            text = message.ciphertext;
+          } else if (message.message_type === "dev_encrypted") {
+            text = "[Legacy dev-encrypted message]";
+          } else if (message.sender_id !== currentUserId) {
+            try {
+              text = await decryptIncomingMessage({
+                currentUserId,
+                message,
+              });
+            } catch (error) {
+              console.error("[x3dh] decrypt failed", {
+                messageId: message.id,
+                messageType: message.message_type,
+                senderId: message.sender_id,
+                receiverId: message.receiver_id,
+                header: message.header,
+                error,
+              });
+            }
+          }
+
+          const decryptedMessage = await messageFromRecord(
+            message,
+            currentUserId,
+            activeChat,
+            text,
+          );
 
           setMessages((currentMessages) => [...currentMessages, decryptedMessage]);
         },
@@ -181,7 +198,7 @@ export default function ChatRoom({
     setSendError(null);
 
     try {
-      const encrypted = await encryptX3DHMessage({
+      const encrypted = await encryptMessageForPeer({
         peerUserId: activeChat.id,
         plaintext: value,
       });

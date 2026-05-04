@@ -2,7 +2,7 @@
 import { ed25519, x25519 } from "@noble/curves/ed25519.js";
 import { base64ToBytes, bytesToBase64 } from "@/lib/crypto/encoding";
 import { deriveX3DHRootKey } from "@/lib/crypto/kdf";
-import { decryptText, encryptText } from "@/lib/crypto/encryption";
+import { createSymmetricRatchetSession } from "@/lib/crypto/symmetricRatchet";
 import { createClient } from "@/lib/supabase/client";
 import {
   getLocalIdentityKeys,
@@ -52,15 +52,6 @@ export type X3DHStoredMessage = {
   header: Record<string, unknown>;
   message_type: string;
 };
-
-function isX3DHInitialHeader(header: Record<string, unknown>): header is X3DHInitialHeader {
-  return (
-    header.type === "x3dh_initial" &&
-    typeof header.senderIdentityDhPublicKey === "string" &&
-    typeof header.senderEphemeralPublicKey === "string" &&
-    typeof header.receiverSignedPrekeyId === "number"
-  );
-}
 
 export async function fetchPrekeyBundle(
   peerUserId: string
@@ -207,16 +198,14 @@ export async function createX3DHSessionAsSender(
 
   const rootKey = await deriveX3DHRootKey(dhOutputs);
 
-  const session: X3DHSession = {
+  const session = await createSymmetricRatchetSession({
     peerUserId,
     rootKey,
-
     myIdentityDhPublicKey: myIdentityKeys.identityDhPublicKey,
     peerIdentityDhPublicKey: peerBundle.identityDhPublicKey,
-
     role: "sender",
     createdAt: new Date().toISOString(),
-  };
+  });
 
   await saveX3DHSession({
     userId: user.id,
@@ -350,16 +339,14 @@ export async function createX3DHSessionAsReceiver({
 
   const rootKey = await deriveX3DHRootKey(dhOutputs);
 
-  const session: X3DHSession = {
+  const session = await createSymmetricRatchetSession({
     peerUserId: senderUserId,
     rootKey,
-
     myIdentityDhPublicKey: myIdentityKeys.identityDhPublicKey,
     peerIdentityDhPublicKey: header.senderIdentityDhPublicKey,
-
     role: "receiver",
     createdAt: new Date().toISOString(),
-  };
+  });
 
   await saveX3DHSession({
     userId: user.id,
@@ -395,74 +382,4 @@ export async function getOrCreateX3DHSessionAsSender(peerUserId: string) {
   }
 
   return await createX3DHSessionAsSender(peerUserId);
-}
-
-export async function encryptX3DHMessage({
-  peerUserId,
-  plaintext,
-}: {
-  peerUserId: string;
-  plaintext: string;
-}) {
-  const { session, initialHeader } = await getOrCreateX3DHSessionAsSender(peerUserId);
-  const encrypted = await encryptText(plaintext, base64ToBytes(session.rootKey));
-
-  return {
-    ciphertext: encrypted.ciphertext,
-    nonce: encrypted.nonce,
-    header: initialHeader ?? {},
-    messageType: initialHeader ? "x3dh_initial" : "x3dh_message",
-  };
-}
-
-export async function decryptX3DHMessage({
-  currentUserId,
-  message,
-}: {
-  currentUserId: string;
-  message: X3DHStoredMessage;
-}) {
-  const peerUserId =
-    message.sender_id === currentUserId ? message.receiver_id : message.sender_id;
-
-  let session = await getX3DHSession({
-    userId: currentUserId,
-    peerUserId,
-  });
-
-  if (!session) {
-    if (message.sender_id === currentUserId) {
-      throw new Error("Local X3DH session not found for sent message");
-    }
-
-    if (!isX3DHInitialHeader(message.header)) {
-      throw new Error("Missing X3DH initial header for first incoming message");
-    }
-
-    session = await createX3DHSessionAsReceiver({
-      senderUserId: message.sender_id,
-      header: message.header,
-    });
-  } else if (
-    message.message_type === "x3dh_initial" &&
-    message.sender_id !== currentUserId
-  ) {
-    if (!isX3DHInitialHeader(message.header)) {
-      throw new Error("Missing X3DH initial header for incoming session reset");
-    }
-
-    session = await createX3DHSessionAsReceiver({
-      senderUserId: message.sender_id,
-      header: message.header,
-      force: true,
-    });
-  }
-
-  return await decryptText(
-    {
-      ciphertext: message.ciphertext,
-      nonce: message.nonce,
-    },
-    base64ToBytes(session.rootKey),
-  );
 }
