@@ -1,10 +1,7 @@
-const users = [
-  { name: "Aarav Shah", status: "Online" },
-  { name: "Maya Patel", status: "Typing..." },
-  { name: "Jordan Lee", status: "Last seen 2m ago" },
-  { name: "Sofia Chen", status: "Online" },
-  { name: "Noah Kim", status: "Last seen 1h ago" },
-];
+import { redirect } from "next/navigation";
+import SignOutButton from "@/components/auth/SignOutButton";
+import { createClient } from "@/lib/supabase/server";
+import { ensureProfile } from "@/lib/supabase/profile";
 
 const messages = [
   {
@@ -24,7 +21,29 @@ const messages = [
   },
 ];
 
-export default function ChatPage() {
+export default async function ChatPage() {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    redirect("/");
+  }
+
+  await ensureProfile(supabase, user);
+
+  const activeName =
+    user.user_metadata.display_name || user.user_metadata.full_name || user.email || "You";
+
+  const users = [
+    { name: activeName, status: "You" },
+    { name: "Maya Patel", status: "Typing..." },
+    { name: "Jordan Lee", status: "Last seen 2m ago" },
+    { name: "Sofia Chen", status: "Online" },
+    { name: "Noah Kim", status: "Last seen 1h ago" },
+  ];
+
   return (
     <main className="min-h-screen bg-slate-950 p-4 text-white md:p-6">
       <div className="mx-auto flex min-h-[calc(100vh-2rem)] max-w-7xl flex-col overflow-hidden rounded-3xl border border-white/10 bg-slate-900 shadow-2xl md:min-h-[calc(100vh-3rem)] md:flex-row">
@@ -68,10 +87,14 @@ export default function ChatPage() {
               <p className="text-xs font-semibold uppercase tracking-[0.3em] text-cyan-300/80">
                 Active Chat
               </p>
-              <h2 className="mt-2 text-xl font-semibold text-white">Maya Patel</h2>
+              <h2 className="mt-2 text-xl font-semibold text-white">{activeName}</h2>
+              <p className="mt-1 text-sm text-slate-400">{user.email}</p>
             </div>
-            <div className="rounded-full bg-emerald-500/15 px-3 py-1 text-sm font-medium text-emerald-300">
-              Secure session
+            <div className="flex items-center gap-3">
+              <div className="rounded-full bg-emerald-500/15 px-3 py-1 text-sm font-medium text-emerald-300">
+                Secure session
+              </div>
+              <SignOutButton />
             </div>
           </header>
 
