@@ -207,12 +207,6 @@ export async function createX3DHSessionAsSender(
     createdAt: new Date().toISOString(),
   });
 
-  await saveX3DHSession({
-    userId: user.id,
-    peerUserId,
-    session,
-  });
-
   const initialHeader: X3DHInitialHeader = {
     type: "x3dh_initial",
 
@@ -222,6 +216,14 @@ export async function createX3DHSessionAsSender(
     receiverSignedPrekeyId: peerBundle.signedPrekeyId,
     receiverOneTimePrekeyId: peerBundle.oneTimePrekeyId,
   };
+
+  session.pendingInitialHeader = initialHeader;
+
+  await saveX3DHSession({
+    userId: user.id,
+    peerUserId,
+    session,
+  });
 
   return {
     session,
@@ -375,11 +377,29 @@ export async function getOrCreateX3DHSessionAsSender(peerUserId: string) {
   });
 
   if (existingSession) {
+    const pendingInitialHeader =
+      existingSession.pendingInitialHeader &&
+      typeof existingSession.pendingInitialHeader === "object" &&
+      isStoredInitialHeader(existingSession.pendingInitialHeader)
+        ? existingSession.pendingInitialHeader
+        : null;
+
     return {
       session: existingSession,
-      initialHeader: null,
+      initialHeader: pendingInitialHeader,
     };
   }
 
   return await createX3DHSessionAsSender(peerUserId);
+}
+
+function isStoredInitialHeader(header: Record<string, unknown>): header is X3DHInitialHeader {
+  return (
+    header.type === "x3dh_initial" &&
+    typeof header.senderIdentityDhPublicKey === "string" &&
+    typeof header.senderEphemeralPublicKey === "string" &&
+    typeof header.receiverSignedPrekeyId === "number" &&
+    (typeof header.receiverOneTimePrekeyId === "number" ||
+      header.receiverOneTimePrekeyId === null)
+  );
 }

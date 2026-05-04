@@ -96,6 +96,7 @@ async function getOrCreateReceiverSession(
   currentUserId: string,
   message: DbMessage,
   force = false,
+  persist = true,
 ) {
   if (!isDoubleRatchetInitialHeader(message.header)) {
     throw new Error("Missing double ratchet initial header for receiver session creation");
@@ -112,11 +113,13 @@ async function getOrCreateReceiverSession(
     theirRatchetPublicKey: message.header.dhPublicKey,
   };
 
-  await saveX3DHSession({
-    userId: currentUserId,
-    peerUserId: message.sender_id,
-    session: updatedSession,
-  });
+  if (persist) {
+    await saveX3DHSession({
+      userId: currentUserId,
+      peerUserId: message.sender_id,
+      session: updatedSession,
+    });
+  }
 
   return updatedSession;
 }
@@ -258,10 +261,15 @@ export async function decryptIncomingMessage({
 
   const { messageKey, nextSession } = await advanceReceivingChain(session);
 
+  const finalizedSession: SymmetricRatchetSession = {
+    ...nextSession,
+    pendingInitialHeader: null,
+  };
+
   await saveX3DHSession({
     userId: currentUserId,
     peerUserId,
-    session: nextSession,
+    session: finalizedSession,
   });
 
   return await decryptText(
@@ -296,7 +304,22 @@ export async function decryptConversationMessages({
     );
 
     if (firstIncomingInitial) {
-      baseSession = await getOrCreateReceiverSession(currentUserId, firstIncomingInitial, true);
+      try {
+        baseSession = await getOrCreateReceiverSession(
+          currentUserId,
+          firstIncomingInitial,
+          true,
+          false,
+        );
+      } catch (error) {
+        console.warn("[history] could not bootstrap receiver session from stored initial message", {
+          currentUserId,
+          peerUserId,
+          messageId: firstIncomingInitial.id,
+          messageType: firstIncomingInitial.message_type,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
   }
 
@@ -344,7 +367,12 @@ export async function decryptConversationMessages({
         plaintexts.push(text);
       } else {
         if (message.message_type === "double_ratchet_initial") {
-          replaySession = await getOrCreateReceiverSession(currentUserId, message, true);
+          replaySession = await getOrCreateReceiverSession(
+            currentUserId,
+            message,
+            true,
+            false,
+          );
         }
 
         const receivedDhPublicKey = getHeaderDhPublicKey(message.header);
@@ -376,12 +404,6 @@ export async function decryptConversationMessages({
       plaintexts.push("[Unable to decrypt message]");
     }
   }
-
-  await saveX3DHSession({
-    userId: currentUserId,
-    peerUserId,
-    session: replaySession,
-  });
 
   return plaintexts;
 }

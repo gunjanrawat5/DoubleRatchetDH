@@ -4,6 +4,7 @@ import { createStore, del, get, keys, set } from "idb-keyval";
 export type SymmetricRatchetSession = {
   peerUserId: string;
   rootKey: string;
+  pendingInitialHeader?: Record<string, unknown> | null;
 
   sendingChainKey: string | null;
   receivingChainKey: string | null;
