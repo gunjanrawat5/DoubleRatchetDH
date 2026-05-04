@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import AuthShell from "@/components/auth/AuthShell";
+import { ensureCryptoSetupForCurrentUser } from "@/lib/crypto/setup";
 import { createClient } from "@/lib/supabase/client";
 
 type LoginFormProps = {
@@ -30,6 +31,14 @@ export default function LoginForm({ message }: LoginFormProps) {
 
     if (signInError) {
       setError(signInError.message);
+      setIsLoading(false);
+      return;
+    }
+
+    try {
+      await ensureCryptoSetupForCurrentUser();
+    } catch (cryptoError) {
+      setError(cryptoError instanceof Error ? cryptoError.message : "Key setup failed.");
       setIsLoading(false);
       return;
     }

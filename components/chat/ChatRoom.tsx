@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import ChatWindow from "@/components/chat/ChatWindow";
 import type { ActiveChat, ChatMessage, DbMessage } from "@/components/chat/types";
 import { createDevSharedKey, decryptText, encryptText } from "@/lib/crypto/encryption";
+import { ensureCryptoSetupForCurrentUser } from "@/lib/crypto/setup";
 import { createClient } from "@/lib/supabase/client";
 
 type ChatRoomProps = {
@@ -55,6 +56,12 @@ export default function ChatRoom({
   const [isSending, setIsSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const seenMessageIdsRef = useRef(new Set(initialMessages.map((message) => message.id)));
+
+  useEffect(() => {
+    void ensureCryptoSetupForCurrentUser().catch((error) => {
+      console.error("[crypto] setup failed", error);
+    });
+  }, []);
 
   useEffect(() => {
     setSendError(null);
