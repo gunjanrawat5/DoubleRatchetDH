@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import ChatRoom from "@/components/chat/ChatRoom";
 import ConversationList, { type ChatContact } from "@/components/chat/ConversationList";
-import type { ActiveChat, ChatMessage } from "@/components/chat/types";
+import type { ActiveChat, DbMessage } from "@/components/chat/types";
 import { createClient } from "@/lib/supabase/server";
 import { ensureProfile } from "@/lib/supabase/profile";
 
@@ -9,19 +9,6 @@ type ProfileRow = {
   id: string;
   username: string | null;
   display_name: string | null;
-};
-
-type MessageRow = {
-  id: string;
-  sender_id: string;
-  receiver_id: string;
-  ciphertext: string;
-  nonce: string;
-  header: Record<string, unknown>;
-  message_type: string;
-  created_at: string;
-  delivered_at: string | null;
-  read_at: string | null;
 };
 
 type ChatPageProps = {
@@ -82,7 +69,7 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
       }
     : undefined;
 
-  const messages: ChatMessage[] = ((rawMessages ?? []) as MessageRow[])
+  const messages: DbMessage[] = ((rawMessages ?? []) as DbMessage[])
     .filter((message) => {
       if (!activeContactId) {
         return false;
@@ -92,21 +79,7 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
         (message.sender_id === user.id && message.receiver_id === activeContactId) ||
         (message.sender_id === activeContactId && message.receiver_id === user.id)
       );
-    })
-    .map((message) => ({
-      id: message.id,
-      sender: message.sender_id === user.id ? "You" : getProfileName(activeProfile ?? {
-        id: activeContactId,
-        username: null,
-        display_name: "Contact",
-      }),
-      text:
-        message.message_type === "text"
-          ? message.ciphertext
-          : `Encrypted ${message.message_type ?? "message"} payload`,
-      own: message.sender_id === user.id,
-      timestamp: message.created_at,
-    }));
+    });
 
   return (
     <main className="min-h-screen bg-slate-950 p-4 text-white md:p-6">
