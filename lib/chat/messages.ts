@@ -1,4 +1,5 @@
 import { base64ToBytes } from "@/lib/crypto/encoding";
+import { performReceivingDHRatchet, performSendingDHRatchet } from "@/lib/crypto/dhRatchet";
 import { decryptText, encryptText } from "@/lib/crypto/encryption";
 import {
   advanceReceivingChain,
@@ -18,14 +19,20 @@ import {
 } from "@/lib/storage/sessionStore";
 import type { DbMessage } from "@/components/chat/types";
 
-async function sha256Base64(value: string) {
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(value),
-  );
+type DoubleRatchetHeader = {
+  type: "double_ratchet";
+  dhPublicKey: string;
+  pn: number;
+  n: number;
+};
 
-  return btoa(String.fromCharCode(...new Uint8Array(digest)));
-}
+type DoubleRatchetInitialHeader = {
+  type: "double_ratchet_initial";
+  x3dh: X3DHInitialHeader;
+  dhPublicKey: string;
+  pn: number;
+  n: number;
+};
 
 function isX3DHInitialHeader(header: Record<string, unknown>): header is X3DHInitialHeader {
   return (
@@ -34,6 +41,41 @@ function isX3DHInitialHeader(header: Record<string, unknown>): header is X3DHIni
     typeof header.senderEphemeralPublicKey === "string" &&
     typeof header.receiverSignedPrekeyId === "number"
   );
+}
+
+function isDoubleRatchetInitialHeader(
+  header: Record<string, unknown>,
+): header is DoubleRatchetInitialHeader {
+  return (
+    header.type === "double_ratchet_initial" &&
+    typeof header.dhPublicKey === "string" &&
+    typeof header.pn === "number" &&
+    typeof header.n === "number" &&
+    typeof header.x3dh === "object" &&
+    header.x3dh !== null &&
+    isX3DHInitialHeader(header.x3dh as Record<string, unknown>)
+  );
+}
+
+function getHeaderDhPublicKey(header: Record<string, unknown>) {
+  return typeof header.dhPublicKey === "string" ? header.dhPublicKey : null;
+}
+
+function buildDoubleRatchetHeader(session: SymmetricRatchetSession): DoubleRatchetHeader {
+  return {
+    type: "double_ratchet",
+    dhPublicKey: session.myRatchetPublicKey,
+    pn: session.previousSendingChainLength,
+    n: session.sendMessageNumber,
+  };
+}
+
+function shortKey(value: string | null | undefined) {
+  if (!value) {
+    return null;
+  }
+
+  return `${value.slice(0, 12)}...`;
 }
 
 async function getCurrentUserId() {
@@ -55,15 +97,28 @@ async function getOrCreateReceiverSession(
   message: DbMessage,
   force = false,
 ) {
-  if (!isX3DHInitialHeader(message.header)) {
-    throw new Error("Missing X3DH initial header for receiver session creation");
+  if (!isDoubleRatchetInitialHeader(message.header)) {
+    throw new Error("Missing double ratchet initial header for receiver session creation");
   }
 
-  return await createX3DHSessionAsReceiver({
+  const session = await createX3DHSessionAsReceiver({
     senderUserId: message.sender_id,
-    header: message.header,
+    header: message.header.x3dh,
     force,
   });
+
+  const updatedSession: SymmetricRatchetSession = {
+    ...session,
+    theirRatchetPublicKey: message.header.dhPublicKey,
+  };
+
+  await saveX3DHSession({
+    userId: currentUserId,
+    peerUserId: message.sender_id,
+    session: updatedSession,
+  });
+
+  return updatedSession;
 }
 
 export async function encryptMessageForPeer({
@@ -74,14 +129,42 @@ export async function encryptMessageForPeer({
   plaintext: string;
 }) {
   const currentUserId = await getCurrentUserId();
-  const { session, initialHeader } = await getOrCreateX3DHSessionAsSender(peerUserId);
+  const { session: currentSession, initialHeader } = await getOrCreateX3DHSessionAsSender(peerUserId);
+  let session = currentSession;
+
+  if (!session.sendingChainKey) {
+    console.log("[dh-ratchet] performing sending ratchet", {
+      currentUserId,
+      peerUserId,
+      myDhPublicKey: shortKey(session.myRatchetPublicKey),
+      theirDhPublicKey: shortKey(session.theirRatchetPublicKey),
+      previousRootKey: shortKey(session.rootKey),
+    });
+
+    session = await performSendingDHRatchet({
+      session,
+    });
+
+    console.log("[dh-ratchet] sending ratchet complete", {
+      currentUserId,
+      peerUserId,
+      myDhPublicKey: shortKey(session.myRatchetPublicKey),
+      theirDhPublicKey: shortKey(session.theirRatchetPublicKey),
+      newRootKey: shortKey(session.rootKey),
+      sendMessageNumber: session.sendMessageNumber,
+    });
+  }
+
   const { messageKey, nextSession } = await advanceSendingChain(session);
 
-  console.log("[ratchet] send", {
+  console.log("[dh-ratchet] send header", {
+    currentUserId,
     peerUserId,
-    messageNumber: session.sendMessageNumber,
-    nextMessageNumber: nextSession.sendMessageNumber,
-    messageKeyFingerprint: await sha256Base64(messageKey),
+    type: initialHeader ? "double_ratchet_initial" : "double_ratchet",
+    myDhPublicKey: shortKey(session.myRatchetPublicKey),
+    theirDhPublicKey: shortKey(session.theirRatchetPublicKey),
+    pn: session.previousSendingChainLength,
+    n: session.sendMessageNumber,
   });
 
   await saveX3DHSession({
@@ -91,12 +174,21 @@ export async function encryptMessageForPeer({
   });
 
   const encrypted = await encryptText(plaintext, base64ToBytes(messageKey));
+  const doubleRatchetHeader = buildDoubleRatchetHeader(session);
 
   return {
     ciphertext: encrypted.ciphertext,
     nonce: encrypted.nonce,
-    header: initialHeader ?? {},
-    messageType: initialHeader ? "x3dh_initial" : "x3dh_message",
+    header: initialHeader
+      ? {
+          type: "double_ratchet_initial",
+          x3dh: initialHeader,
+          dhPublicKey: doubleRatchetHeader.dhPublicKey,
+          pn: doubleRatchetHeader.pn,
+          n: doubleRatchetHeader.n,
+        }
+      : doubleRatchetHeader,
+    messageType: initialHeader ? "double_ratchet_initial" : "double_ratchet",
   };
 }
 
@@ -115,19 +207,56 @@ export async function decryptIncomingMessage({
 
   if (!session) {
     session = await getOrCreateReceiverSession(currentUserId, message);
-  } else if (message.message_type === "x3dh_initial") {
+  } else if (message.message_type === "double_ratchet_initial") {
     session = await getOrCreateReceiverSession(currentUserId, message, true);
   }
 
-  const { messageKey, nextSession } = await advanceReceivingChain(session);
+  const receivedDhPublicKey = getHeaderDhPublicKey(message.header);
 
-  console.log("[ratchet] receive", {
+  console.log("[dh-ratchet] receive header", {
+    currentUserId,
     peerUserId,
     messageId: message.id,
-    messageNumber: session.receiveMessageNumber,
-    nextMessageNumber: nextSession.receiveMessageNumber,
-    messageKeyFingerprint: await sha256Base64(messageKey),
+    type: message.message_type,
+    receivedDhPublicKey: shortKey(receivedDhPublicKey),
+    storedTheirDhPublicKey: shortKey(session.theirRatchetPublicKey),
+    myDhPublicKey: shortKey(session.myRatchetPublicKey),
   });
+
+  if (receivedDhPublicKey && session.theirRatchetPublicKey !== receivedDhPublicKey) {
+    console.log("[dh-ratchet] performing receiving ratchet", {
+      currentUserId,
+      peerUserId,
+      messageId: message.id,
+      previousTheirDhPublicKey: shortKey(session.theirRatchetPublicKey),
+      newTheirDhPublicKey: shortKey(receivedDhPublicKey),
+      previousRootKey: shortKey(session.rootKey),
+    });
+
+    session = await performReceivingDHRatchet({
+      session,
+      receivedDhPublicKey,
+    });
+
+    console.log("[dh-ratchet] receiving ratchet complete", {
+      currentUserId,
+      peerUserId,
+      messageId: message.id,
+      newMyDhPublicKey: shortKey(session.myRatchetPublicKey),
+      storedTheirDhPublicKey: shortKey(session.theirRatchetPublicKey),
+      newRootKey: shortKey(session.rootKey),
+      sendMessageNumber: session.sendMessageNumber,
+      receiveMessageNumber: session.receiveMessageNumber,
+    });
+
+    await saveX3DHSession({
+      userId: currentUserId,
+      peerUserId,
+      session,
+    });
+  }
+
+  const { messageKey, nextSession } = await advanceReceivingChain(session);
 
   await saveX3DHSession({
     userId: currentUserId,
@@ -163,7 +292,7 @@ export async function decryptConversationMessages({
       (message) =>
         message.sender_id === peerUserId &&
         message.receiver_id === currentUserId &&
-        message.message_type === "x3dh_initial",
+        message.message_type === "double_ratchet_initial",
     );
 
     if (firstIncomingInitial) {
@@ -214,8 +343,20 @@ export async function decryptConversationMessages({
 
         plaintexts.push(text);
       } else {
-        if (message.message_type === "x3dh_initial" && isX3DHInitialHeader(message.header)) {
+        if (message.message_type === "double_ratchet_initial") {
           replaySession = await getOrCreateReceiverSession(currentUserId, message, true);
+        }
+
+        const receivedDhPublicKey = getHeaderDhPublicKey(message.header);
+
+        if (
+          receivedDhPublicKey &&
+          replaySession.theirRatchetPublicKey !== receivedDhPublicKey
+        ) {
+          replaySession = await performReceivingDHRatchet({
+            session: replaySession,
+            receivedDhPublicKey,
+          });
         }
 
         const { messageKey, nextSession } = await advanceReceivingChain(replaySession);

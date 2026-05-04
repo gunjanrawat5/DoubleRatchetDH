@@ -1,6 +1,7 @@
 import { base64ToBytes, bytesToBase64 } from "@/lib/crypto/encoding";
 import { hkdfSha256 } from "@/lib/crypto/kdf";
 import type { SymmetricRatchetSession } from "@/lib/storage/sessionStore";
+import { generateRatchetKeyPair } from "@/lib/crypto/dhRatchet";
 
 async function hmacSha256(key: Uint8Array, data: string) {
   const cryptoKey = await crypto.subtle.importKey(
@@ -42,26 +43,39 @@ export async function createSymmetricRatchetSession(params: {
   role: "sender" | "receiver";
   createdAt: string;
 }): Promise<SymmetricRatchetSession> {
+  const ratchetKeyPair = generateRatchetKeyPair();
+
+  const initialAliceSendingChain =
+    await deriveChainKey(params.rootKey, "alice-sending-chain");
+
   const sendingChainKey =
     params.role === "sender"
-      ? await deriveChainKey(params.rootKey, "alice-sending-chain")
-      : await deriveChainKey(params.rootKey, "bob-sending-chain");
+      ? initialAliceSendingChain
+      : null;
 
   const receivingChainKey =
     params.role === "sender"
-      ? await deriveChainKey(params.rootKey, "bob-sending-chain")
-      : await deriveChainKey(params.rootKey, "alice-sending-chain");
+      ? null
+      : initialAliceSendingChain;
 
   return {
     ...params,
     sendingChainKey,
     receivingChainKey,
+    myRatchetPrivateKey: ratchetKeyPair.privateKey,
+    myRatchetPublicKey: ratchetKeyPair.publicKey,
+    theirRatchetPublicKey: null,
     sendMessageNumber: 0,
     receiveMessageNumber: 0,
+    previousSendingChainLength: 0,
   };
 }
 
 export async function advanceSendingChain(session: SymmetricRatchetSession) {
+  if (!session.sendingChainKey) {
+    throw new Error("Sending chain key is not initialized");
+  }
+
   const currentChainKey = base64ToBytes(session.sendingChainKey);
   const messageKey = await hmacSha256(currentChainKey, "message-key");
   const nextChainKey = await hmacSha256(currentChainKey, "chain-key");
@@ -77,6 +91,10 @@ export async function advanceSendingChain(session: SymmetricRatchetSession) {
 }
 
 export async function advanceReceivingChain(session: SymmetricRatchetSession) {
+  if (!session.receivingChainKey) {
+    throw new Error("Receiving chain key is not initialized");
+  }
+
   const currentChainKey = base64ToBytes(session.receivingChainKey);
   const messageKey = await hmacSha256(currentChainKey, "message-key");
   const nextChainKey = await hmacSha256(currentChainKey, "chain-key");
@@ -92,12 +110,25 @@ export async function advanceReceivingChain(session: SymmetricRatchetSession) {
 }
 
 export async function resetSymmetricRatchetSession(session: SymmetricRatchetSession) {
-  return await createSymmetricRatchetSession({
-    peerUserId: session.peerUserId,
-    rootKey: session.rootKey,
-    myIdentityDhPublicKey: session.myIdentityDhPublicKey,
-    peerIdentityDhPublicKey: session.peerIdentityDhPublicKey,
-    role: session.role,
-    createdAt: session.createdAt,
-  });
+  const initialAliceSendingChain =
+    await deriveChainKey(session.rootKey, "alice-sending-chain");
+
+  const sendingChainKey =
+    session.role === "sender"
+      ? initialAliceSendingChain
+      : null;
+
+  const receivingChainKey =
+    session.role === "sender"
+      ? null
+      : initialAliceSendingChain;
+
+  return {
+    ...session,
+    sendingChainKey,
+    receivingChainKey,
+    sendMessageNumber: 0,
+    receiveMessageNumber: 0,
+    previousSendingChainLength: 0,
+  };
 }

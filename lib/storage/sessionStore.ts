@@ -5,14 +5,19 @@ export type SymmetricRatchetSession = {
   peerUserId: string;
   rootKey: string;
 
-  myIdentityDhPublicKey: string;
-  peerIdentityDhPublicKey: string;
+  sendingChainKey: string | null;
+  receivingChainKey: string | null;
 
-  sendingChainKey: string;
-  receivingChainKey: string;
+  myRatchetPrivateKey: string;
+  myRatchetPublicKey: string;
+  theirRatchetPublicKey: string | null;
 
   sendMessageNumber: number;
   receiveMessageNumber: number;
+  previousSendingChainLength: number;
+
+  myIdentityDhPublicKey: string;
+  peerIdentityDhPublicKey: string;
 
   role: "sender" | "receiver";
 

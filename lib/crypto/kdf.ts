@@ -1,5 +1,5 @@
 
-import { bytesToBase64 } from "@/lib/crypto/encoding";
+import { base64ToBytes, bytesToBase64 } from "@/lib/crypto/encoding";
 
 export function concatBytes(...arrays: Uint8Array[]): Uint8Array {
   const totalLength = arrays.reduce((sum, arr) => sum + arr.length, 0);
@@ -63,4 +63,30 @@ export async function deriveX3DHRootKey(
   });
 
   return bytesToBase64(rootKey);
+}
+
+export async function deriveRootAndChainKey({
+  rootKey,
+  dhOutput,
+}: {
+  rootKey: string;
+  dhOutput: Uint8Array;
+}): Promise<{
+  newRootKey: string;
+  newChainKey: string;
+}> {
+  const output = await hkdfSha256({
+    inputKeyMaterial: dhOutput,
+    salt: base64ToBytes(rootKey),
+    info: "secure-chat-dh-ratchet-v1",
+    lengthBytes: 64,
+  });
+
+  const newRootKey = output.slice(0, 32);
+  const newChainKey = output.slice(32, 64);
+
+  return {
+    newRootKey: bytesToBase64(newRootKey),
+    newChainKey: bytesToBase64(newChainKey),
+  };
 }
