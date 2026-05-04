@@ -10,6 +10,7 @@ type ChatWindowProps = {
   onSend?: (value: string) => Promise<boolean> | boolean;
   isSending?: boolean;
   sendError?: string | null;
+  isCryptoReady?: boolean;
 };
 
 function formatTimestamp(value?: string | null) {
@@ -31,6 +32,7 @@ export default function ChatWindow({
   onSend,
   isSending = false,
   sendError,
+  isCryptoReady = true,
 }: ChatWindowProps) {
   return (
     <section className="flex min-h-[60vh] flex-1 flex-col bg-slate-950">
@@ -99,7 +101,16 @@ export default function ChatWindow({
         </div>
       ) : null}
 
-      <MessageInput disabled={!activeChat} isSending={isSending} onSend={onSend} />
+      <MessageInput
+        disabled={!activeChat || !isCryptoReady}
+        isSending={isSending}
+        onSend={onSend}
+        placeholder={
+          !isCryptoReady
+            ? "Preparing local encryption keys..."
+            : "Type a message..."
+        }
+      />
     </section>
   );
 }

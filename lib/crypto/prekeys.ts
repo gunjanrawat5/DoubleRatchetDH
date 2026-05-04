@@ -145,11 +145,36 @@ export async function ensurePrekeysForCurrentUser() {
   if (!oneTimePrekeys || oneTimePrekeys.length === 0) {
     oneTimePrekeys = generateOneTimePrekeys(50);
     await saveLocalOneTimePrekeys(user.id, oneTimePrekeys);
-    await uploadOneTimePrekeys({
-      userId: user.id,
-      prekeys: oneTimePrekeys,
-    });
   }
+
+  // Make the current browser's local prekey material authoritative for this user.
+  const { error: deleteSignedError } = await supabase
+    .from("signed_prekeys")
+    .delete()
+    .eq("user_id", user.id);
+
+  if (deleteSignedError) {
+    throw deleteSignedError;
+  }
+
+  const { error: deleteOneTimeError } = await supabase
+    .from("one_time_prekeys")
+    .delete()
+    .eq("user_id", user.id);
+
+  if (deleteOneTimeError) {
+    throw deleteOneTimeError;
+  }
+
+  await uploadSignedPrekey({
+    userId: user.id,
+    signedPrekey,
+  });
+
+  await uploadOneTimePrekeys({
+    userId: user.id,
+    prekeys: oneTimePrekeys,
+  });
 
   return {
     signedPrekey,

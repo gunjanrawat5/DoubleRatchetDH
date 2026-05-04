@@ -7,12 +7,14 @@ type MessageInputProps = {
   disabled?: boolean;
   isSending?: boolean;
   onSend?: (value: string) => Promise<boolean> | boolean;
+  placeholder?: string;
 };
 
 export default function MessageInput({
   disabled = false,
   isSending = false,
   onSend,
+  placeholder = "Type a message...",
 }: MessageInputProps) {
   const [value, setValue] = useState("");
 
@@ -39,7 +41,7 @@ export default function MessageInput({
           type="text"
           value={value}
           onChange={(event) => setValue(event.target.value)}
-          placeholder={disabled ? "Select a user to start chatting..." : "Type a message..."}
+          placeholder={disabled ? placeholder : "Type a message..."}
           disabled={disabled || isSending}
           className="flex-1 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white placeholder:text-slate-400 outline-none disabled:cursor-not-allowed disabled:opacity-60"
         />

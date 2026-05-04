@@ -3,8 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import ChatWindow from "@/components/chat/ChatWindow";
 import type { ActiveChat, ChatMessage, DbMessage } from "@/components/chat/types";
-import { createDevSharedKey, decryptText, encryptText } from "@/lib/crypto/encryption";
 import { ensureCryptoSetupForCurrentUser } from "@/lib/crypto/setup";
+import { decryptX3DHMessage, encryptX3DHMessage } from "@/lib/crypto/x3dh";
 import { createClient } from "@/lib/supabase/client";
 
 type ChatRoomProps = {
@@ -20,19 +20,25 @@ async function messageFromRecord(
 ): Promise<ChatMessage> {
   let text = `Encrypted ${record.message_type} payload`;
 
-  if (record.message_type === "dev_encrypted") {
+  if (record.message_type === "x3dh_initial" || record.message_type === "x3dh_message") {
     try {
-      const devKey = await createDevSharedKey();
-      text = await decryptText(
-        {
-          ciphertext: record.ciphertext,
-          nonce: record.nonce,
-        },
-        devKey,
-      );
-    } catch {
+      text = await decryptX3DHMessage({
+        currentUserId,
+        message: record,
+      });
+    } catch (error) {
+      console.error("[x3dh] decrypt failed", {
+        messageId: record.id,
+        messageType: record.message_type,
+        senderId: record.sender_id,
+        receiverId: record.receiver_id,
+        header: record.header,
+        error,
+      });
       text = "[Unable to decrypt message]";
     }
+  } else if (record.message_type === "dev_encrypted") {
+    text = "[Legacy dev-encrypted message]";
   } else if (record.message_type === "text") {
     text = record.ciphertext;
   }
@@ -52,18 +58,43 @@ export default function ChatRoom({
   initialMessages,
 }: ChatRoomProps) {
   const supabase = useMemo(() => createClient(), []);
+  const [isCryptoReady, setIsCryptoReady] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isSending, setIsSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const seenMessageIdsRef = useRef(new Set(initialMessages.map((message) => message.id)));
 
   useEffect(() => {
-    void ensureCryptoSetupForCurrentUser().catch((error) => {
-      console.error("[crypto] setup failed", error);
-    });
+    let isCancelled = false;
+
+    async function setupCrypto() {
+      try {
+        await ensureCryptoSetupForCurrentUser();
+
+        if (!isCancelled) {
+          setIsCryptoReady(true);
+        }
+      } catch (error) {
+        console.error("[crypto] setup failed", error);
+
+        if (!isCancelled) {
+          setSendError(error instanceof Error ? error.message : "Crypto setup failed.");
+        }
+      }
+    }
+
+    void setupCrypto();
+
+    return () => {
+      isCancelled = true;
+    };
   }, []);
 
   useEffect(() => {
+    if (!isCryptoReady) {
+      return;
+    }
+
     setSendError(null);
     seenMessageIdsRef.current = new Set(initialMessages.map((message) => message.id));
 
@@ -84,10 +115,10 @@ export default function ChatRoom({
     return () => {
       isCancelled = true;
     };
-  }, [activeChat, currentUserId, initialMessages]);
+  }, [activeChat, currentUserId, initialMessages, isCryptoReady]);
 
   useEffect(() => {
-    if (!activeChat) {
+    if (!activeChat || !isCryptoReady) {
       return;
     }
 
@@ -139,10 +170,10 @@ export default function ChatRoom({
       });
       void supabase.removeChannel(channel);
     };
-  }, [activeChat, currentUserId, supabase]);
+  }, [activeChat, currentUserId, isCryptoReady, supabase]);
 
   async function handleSend(value: string) {
-    if (!activeChat) {
+    if (!activeChat || !isCryptoReady) {
       return false;
     }
 
@@ -150,8 +181,10 @@ export default function ChatRoom({
     setSendError(null);
 
     try {
-      const devKey = await createDevSharedKey();
-      const encrypted = await encryptText(value, devKey);
+      const encrypted = await encryptX3DHMessage({
+        peerUserId: activeChat.id,
+        plaintext: value,
+      });
 
       const { data, error } = await supabase
         .from("messages")
@@ -160,8 +193,8 @@ export default function ChatRoom({
           receiver_id: activeChat.id,
           ciphertext: encrypted.ciphertext,
           nonce: encrypted.nonce,
-          header: {},
-          message_type: "dev_encrypted",
+          header: encrypted.header,
+          message_type: encrypted.messageType,
         })
         .select(
           "id, sender_id, receiver_id, ciphertext, nonce, header, message_type, created_at, delivered_at, read_at",
@@ -178,13 +211,16 @@ export default function ChatRoom({
 
       if (!seenMessageIdsRef.current.has(insertedMessage.id)) {
         seenMessageIdsRef.current.add(insertedMessage.id);
-        const decryptedMessage = await messageFromRecord(
-          insertedMessage,
-          currentUserId,
-          activeChat,
-        );
-
-        setMessages((currentMessages) => [...currentMessages, decryptedMessage]);
+        setMessages((currentMessages) => [
+          ...currentMessages,
+          {
+            id: insertedMessage.id,
+            sender: "You",
+            text: value,
+            own: true,
+            timestamp: insertedMessage.created_at,
+          },
+        ]);
       }
 
       setIsSending(false);
@@ -202,6 +238,7 @@ export default function ChatRoom({
       messages={messages}
       sendError={sendError}
       isSending={isSending}
+      isCryptoReady={isCryptoReady}
       onSend={handleSend}
     />
   );
