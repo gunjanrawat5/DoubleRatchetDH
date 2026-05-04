@@ -1,27 +1,40 @@
 import { redirect } from "next/navigation";
-import SignOutButton from "@/components/auth/SignOutButton";
+import ChatRoom from "@/components/chat/ChatRoom";
+import ConversationList, { type ChatContact } from "@/components/chat/ConversationList";
+import type { ActiveChat, ChatMessage } from "@/components/chat/types";
 import { createClient } from "@/lib/supabase/server";
 import { ensureProfile } from "@/lib/supabase/profile";
 
-const messages = [
-  {
-    sender: "Maya Patel",
-    text: "I finished the handshake flow. Want me to walk you through the message exchange next?",
-    own: false,
-  },
-  {
-    sender: "You",
-    text: "Yes please. I want to make sure the UI is ready for the encrypted chat states.",
-    own: true,
-  },
-  {
-    sender: "Maya Patel",
-    text: "Perfect. We can map the active user on the left and keep the full conversation on the right.",
-    own: false,
-  },
-];
+type ProfileRow = {
+  id: string;
+  username: string | null;
+  display_name: string | null;
+};
 
-export default async function ChatPage() {
+type MessageRow = {
+  id: string;
+  sender_id: string;
+  receiver_id: string;
+  ciphertext: string;
+  nonce: string;
+  header: Record<string, unknown>;
+  message_type: string;
+  created_at: string;
+  delivered_at: string | null;
+  read_at: string | null;
+};
+
+type ChatPageProps = {
+  searchParams: Promise<{
+    contact?: string;
+  }>;
+};
+
+function getProfileName(profile: ProfileRow) {
+  return profile.display_name || profile.username || "Unknown user";
+}
+
+export default async function ChatPage({ searchParams }: ChatPageProps) {
   const supabase = await createClient();
   const {
     data: { user },
@@ -33,109 +46,77 @@ export default async function ChatPage() {
 
   await ensureProfile(supabase, user);
 
-  const activeName =
-    user.user_metadata.display_name || user.user_metadata.full_name || user.email || "You";
+  const params = await searchParams;
+  const [{ data: profiles }, { data: rawMessages }] = await Promise.all([
+    supabase
+      .from("profiles")
+      .select("id, username, display_name")
+      .neq("id", user.id)
+      .order("display_name", { ascending: true }),
+    supabase
+      .from("messages")
+      .select(
+        "id, sender_id, receiver_id, ciphertext, nonce, header, message_type, created_at, delivered_at, read_at",
+      )
+      .or(`sender_id.eq.${user.id},receiver_id.eq.${user.id}`)
+      .order("created_at", { ascending: true }),
+  ]);
 
-  const users = [
-    { name: activeName, status: "You" },
-    { name: "Maya Patel", status: "Typing..." },
-    { name: "Jordan Lee", status: "Last seen 2m ago" },
-    { name: "Sofia Chen", status: "Online" },
-    { name: "Noah Kim", status: "Last seen 1h ago" },
-  ];
+  const contacts: ChatContact[] = (profiles ?? []).map((profile) => ({
+    id: profile.id,
+    name: getProfileName(profile),
+    status: profile.username ? `@${profile.username}` : "Available",
+  }));
+
+  const activeContactId =
+    params.contact && contacts.some((contact) => contact.id === params.contact)
+      ? params.contact
+      : contacts[0]?.id;
+
+  const activeProfile = (profiles ?? []).find((profile) => profile.id === activeContactId);
+  const activeChat: ActiveChat | undefined = activeProfile
+    ? {
+        id: activeProfile.id,
+        name: getProfileName(activeProfile),
+        email: activeProfile.username ? `@${activeProfile.username}` : null,
+      }
+    : undefined;
+
+  const messages: ChatMessage[] = ((rawMessages ?? []) as MessageRow[])
+    .filter((message) => {
+      if (!activeContactId) {
+        return false;
+      }
+
+      return (
+        (message.sender_id === user.id && message.receiver_id === activeContactId) ||
+        (message.sender_id === activeContactId && message.receiver_id === user.id)
+      );
+    })
+    .map((message) => ({
+      id: message.id,
+      sender: message.sender_id === user.id ? "You" : getProfileName(activeProfile ?? {
+        id: activeContactId,
+        username: null,
+        display_name: "Contact",
+      }),
+      text:
+        message.message_type === "text"
+          ? message.ciphertext
+          : `Encrypted ${message.message_type ?? "message"} payload`,
+      own: message.sender_id === user.id,
+      timestamp: message.created_at,
+    }));
 
   return (
     <main className="min-h-screen bg-slate-950 p-4 text-white md:p-6">
       <div className="mx-auto flex min-h-[calc(100vh-2rem)] max-w-7xl flex-col overflow-hidden rounded-3xl border border-white/10 bg-slate-900 shadow-2xl md:min-h-[calc(100vh-3rem)] md:flex-row">
-        <aside className="w-full border-b border-white/10 bg-slate-900/90 md:w-1/4 md:border-r md:border-b-0">
-          <div className="border-b border-white/10 px-5 py-5">
-            <p className="text-xs font-semibold uppercase tracking-[0.3em] text-cyan-300/80">
-              Contacts
-            </p>
-            <h1 className="mt-2 text-2xl font-semibold text-white">Users</h1>
-          </div>
-
-          <div className="space-y-2 p-3">
-            {users.map((user, index) => (
-              <button
-                key={user.name}
-                type="button"
-                className={`flex w-full items-center gap-3 rounded-2xl px-4 py-3 text-left transition ${
-                  index === 1
-                    ? "bg-cyan-500/20 ring-1 ring-cyan-400/40"
-                    : "bg-white/5 hover:bg-white/10"
-                }`}
-              >
-                <div className="flex h-11 w-11 items-center justify-center rounded-full bg-slate-700 text-sm font-semibold text-cyan-200">
-                  {user.name
-                    .split(" ")
-                    .map((part) => part[0])
-                    .join("")}
-                </div>
-                <div className="min-w-0">
-                  <p className="truncate font-medium text-white">{user.name}</p>
-                  <p className="truncate text-sm text-slate-300">{user.status}</p>
-                </div>
-              </button>
-            ))}
-          </div>
-        </aside>
-
-        <section className="flex min-h-[60vh] flex-1 flex-col bg-slate-950">
-          <header className="flex items-center justify-between border-b border-white/10 px-5 py-5">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.3em] text-cyan-300/80">
-                Active Chat
-              </p>
-              <h2 className="mt-2 text-xl font-semibold text-white">{activeName}</h2>
-              <p className="mt-1 text-sm text-slate-400">{user.email}</p>
-            </div>
-            <div className="flex items-center gap-3">
-              <div className="rounded-full bg-emerald-500/15 px-3 py-1 text-sm font-medium text-emerald-300">
-                Secure session
-              </div>
-              <SignOutButton />
-            </div>
-          </header>
-
-          <div className="flex-1 space-y-4 overflow-y-auto px-5 py-6">
-            {messages.map((message, index) => (
-              <div
-                key={`${message.sender}-${index}`}
-                className={`flex ${message.own ? "justify-end" : "justify-start"}`}
-              >
-                <div
-                  className={`max-w-2xl rounded-3xl px-4 py-3 shadow-lg ${
-                    message.own
-                      ? "bg-cyan-400 text-slate-950"
-                      : "bg-white/8 text-white ring-1 ring-white/10"
-                  }`}
-                >
-                  <p className="mb-1 text-xs font-semibold uppercase tracking-[0.2em] opacity-70">
-                    {message.sender}
-                  </p>
-                  <p className="text-sm leading-6">{message.text}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-
-          <div className="border-t border-white/10 p-5">
-            <form className="flex flex-col gap-3 md:flex-row">
-              <input
-                type="text"
-                placeholder="Type a message..."
-                className="flex-1 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white placeholder:text-slate-400 outline-none"
-              />
-              <button
-                type="submit"
-                className="rounded-2xl bg-cyan-400 px-6 py-3 font-semibold text-slate-950 transition hover:bg-cyan-300"
-              >
-                Send
-              </button>
-            </form>
-          </div>
-        </section>
+        <ConversationList contacts={contacts} activeContactId={activeContactId} />
+        <ChatRoom
+          currentUserId={user.id}
+          activeChat={activeChat}
+          initialMessages={messages}
+        />
       </div>
     </main>
   );
