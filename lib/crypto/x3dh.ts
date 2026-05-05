@@ -90,7 +90,7 @@ export async function fetchPrekeyBundle(
     signedPrekeyPublicKey: signedPrekey.public_key,
     signedPrekeySignature: signedPrekey.signature,
 
-    // One-time prekeys are optional in X3DH. We disable claiming for now because
+    // One-time prekeys are optional in X3DH. Disabled claiming for now because
     // the current browser-local private key inventory can drift from the claimed
     // server row, which breaks receiver-side DH4 reconstruction.
     oneTimePrekeyId: null,
